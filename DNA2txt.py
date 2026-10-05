@@ -1,49 +1,66 @@
+"""Decode a seed-prefixed DNA file produced by txt2DNA.py."""
+
+import argparse
 import random
 import sys
 
-# Reverse translation dictionary, DNA to binary
-t = {
-    "A": "00",
-    "T": "01",
-    "C": "10",
-    "G": "11"
-}
 
-# Function to convert base pairs into bytes
+# Preserve the original on-disk mapping.
+t = {"A": "00", "T": "01", "C": "10", "G": "11"}
+
+
 def bp2byte(bp):
-    return int(''.join(t[b] for b in bp), 2)
+    """Decode exactly four uppercase DNA bases into one byte."""
+    if len(bp) != 4:
+        raise ValueError("Each byte must contain exactly four DNA bases")
+    try:
+        return int("".join(t[base] for base in bp), 2)
+    except KeyError as error:
+        raise ValueError(f"Invalid DNA base: {error.args[0]!r}") from None
 
-# Function to convert a DNA sequence into a seed value
+
 def dna2seed(dna_sequence):
-    # Combine the bytes from the first 8 bases into one seed value
-    return (bp2byte(dna_sequence[:4]) << 8) + bp2byte(dna_sequence[4:8])
+    """Decode the eight-base seed header."""
+    if len(dna_sequence) != 8:
+        raise ValueError("The seed header must contain exactly eight DNA bases")
+    return (bp2byte(dna_sequence[:4]) << 8) + bp2byte(dna_sequence[4:])
 
-# Read the input file from command line argument
-input_file = sys.argv[1]
 
-# Open and read the DNA sequence from the file
-with open(input_file, "r") as f:
-    dna_sequence = f.read().strip()
+def decode_data(dna_sequence):
+    """Decode DNA, rejecting incomplete headers, partial bytes and bad bases."""
+    dna_sequence = dna_sequence.strip()
+    if len(dna_sequence) < 8:
+        raise ValueError("DNA sequence must contain an eight-base seed header")
+    if (len(dna_sequence) - 8) % 4:
+        raise ValueError("DNA payload length must be a multiple of four bases")
+    invalid_bases = set(dna_sequence) - set(t)
+    if invalid_bases:
+        raise ValueError(f"Invalid DNA bases: {', '.join(repr(base) for base in sorted(invalid_bases))}")
+    seed = dna2seed(dna_sequence[:8])
+    rng = random.Random(seed)
+    return bytes(
+        bp2byte(dna_sequence[i:i + 4]) ^ rng.randint(0, 255)
+        for i in range(8, len(dna_sequence), 4)
+    )
 
-# Extract the seed corresponding to the first 8 bases and convert it into a seed value
-seed = dna2seed(dna_sequence[:8])
-print(f"Seed extracted: {seed}")
 
-# Set the random seed
-random.seed(seed)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input_file", help="DNA file to decode")
+    parser.add_argument("-o", "--output", default="decoded_output", help="new output binary file (must not exist)")
+    args = parser.parse_args(argv)
+    try:
+        with open(args.input_file, "r", encoding="ascii") as source:
+            dna_sequence = source.read()
+        decoded_data = decode_data(dna_sequence)
+        with open(args.output, "xb") as output:
+            output.write(decoded_data)
+    except (OSError, ValueError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    print(f"Decoding complete. Output file: {args.output}")
+    return 0
 
-# Decode the remaining DNA sequence into binary data
-decoded_data = bytearray()
-for i in range(8, len(dna_sequence), 4):
-    # Convert every 4 bases back into a byte
-    byte = bp2byte(dna_sequence[i:i+4])
-    # Perform XOR operation with a random number to decode
-    decoded_byte = byte ^ random.randint(0, 255)
-    decoded_data.append(decoded_byte)
 
-# Write the decoded data to the output file
-output_file = "decoded_output"
-with open(output_file, "wb") as f:
-    f.write(decoded_data)
-
-print(f"Decoding complete. Output file: {output_file}")
+if __name__ == "__main__":
+    sys.exit(main())
